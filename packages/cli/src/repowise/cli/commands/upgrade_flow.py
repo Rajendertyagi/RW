@@ -185,8 +185,17 @@ async def _run_upgrade(
         "(graph reused from index — not re-resolved)."
     )
 
-    # 5. Generate the docs the fast index skipped.
-    cost_tracker = CostTracker(session_factory=sf, repo_id=repo_id)
+    # 5. Generate the docs the fast index skipped. Honor the cost-tracking
+    # opt-out (issue #326) so REPOWISE_NO_COST_TRACKING is respected here too;
+    # an in-memory tracker still powers the live cost readout.
+    from repowise.cli.providers import cost_tracking_disabled
+
+    if cost_tracking_disabled():
+        cost_tracker = CostTracker()
+    else:
+        # buffered=True defers cost INSERTs to a single post-generation flush so
+        # they never contend with the generation writer (issue #326).
+        cost_tracker = CostTracker(session_factory=sf, repo_id=repo_id, buffered=True)
     provider._cost_tracker = cost_tracker
     generated_pages = await run_generation(
         repo_path=repo_path,
@@ -203,6 +212,9 @@ async def _run_upgrade(
         cost_tracker=cost_tracker,
         generation_config=config,
     )
+
+    # Flush buffered cost rows now generation is done (best-effort).
+    await cost_tracker.flush()
 
     # 6. Persist pages + a GenerationJob marker, then build the FTS index.
     async with get_session(sf) as session:

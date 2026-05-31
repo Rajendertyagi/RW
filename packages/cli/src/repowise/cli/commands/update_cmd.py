@@ -606,6 +606,18 @@ def _render_update_report(
         "re-parsing and re-resolving it. Single-repo only."
     ),
 )
+@click.option(
+    "--no-cost-tracking",
+    is_flag=True,
+    default=False,
+    help=(
+        "Skip DB-backed LLM cost tracking for this run. Avoids opening a second "
+        "engine on wiki.db, so cost writes can never contend with the "
+        "generation writer. The live cost readout still works; only historical "
+        "`repowise costs` rows are skipped. Also settable via the "
+        "REPOWISE_NO_COST_TRACKING env var."
+    ),
+)
 def update_command(
     path: str | None,
     provider_name: str | None,
@@ -621,6 +633,7 @@ def update_command(
     docs_flag: bool | None = None,
     full: bool = False,
     concurrency: int = 5,
+    no_cost_tracking: bool = False,
 ) -> None:
     """Incrementally update wiki pages for files changed since last sync.
 
@@ -858,7 +871,9 @@ def update_command(
     # all subsequent updates.
     from repowise.cli.providers import build_cost_tracker
 
-    cost_tracker = build_cost_tracker(repo_path, repo_path.name)
+    cost_tracker = build_cost_tracker(
+        repo_path, repo_path.name, no_cost_tracking=no_cost_tracking
+    )
     provider._cost_tracker = cost_tracker
 
     # (dead_code_report computed above, before the index-only branch)
@@ -1013,6 +1028,12 @@ def update_command(
             git_meta_map=git_meta_map,
         )
     )
+
+    # Flush the buffered LLM cost rows now that generation is done — a single
+    # transaction outside the contended generation window (issue #326).
+    from repowise.cli.providers import flush_cost_tracker
+
+    flush_cost_tracker(cost_tracker)
 
     # Persist
     async def _persist() -> None:
