@@ -30,7 +30,7 @@ import json as _json
 import logging
 import time
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import AnswerCache
@@ -65,8 +65,13 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import answer_hint as _answer_hint
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server.tool_answer.confidence import _answer_is_hedged
+from repowise.server.mcp_server.tool_answer.confidence import (
+    _answer_is_hedged,
+    _is_value_question,
+    _ungrounded_numbers,
+)
 from repowise.server.mcp_server.tool_answer.config import (
+    _ANSWER_CACHE_TTL_DAYS,
     _ANSWER_SCHEMA_VERSION,
     _DOMINANCE_RATIO,
     _ENRICH_TOP_N_HITS,
@@ -82,8 +87,12 @@ from repowise.server.mcp_server.tool_answer.retrieval import (
     _intersection_boost,
     _rerank_by_coverage,
 )
+from repowise.server.mcp_server.tool_answer.retrieval import (
+    serialize_hits as _serialize_hits,
+)
 from repowise.server.mcp_server.tool_answer.symbols import (
     _extract_question_identifiers,
+    _extract_value_answer,
     _hydrate_symbols_for_hits,
 )
 from repowise.server.mcp_server.tool_answer.synthesis import (
@@ -94,30 +103,48 @@ from repowise.server.mcp_server.tool_answer.synthesis import (
 _log = logging.getLogger("repowise.mcp.answer")
 
 
+def _json_default(obj):
+    """Serialize the non-JSON types retrieval hits carry (``_sources`` sets).
+
+    Before this fallback existed, EVERY cache write failed on the sets the
+    hybrid retriever attaches to hits — silently, under the old blanket
+    suppress. The cache never stored a single post-hybrid-pipeline answer.
+    """
+    if isinstance(obj, (set, frozenset)):
+        # str-key the sort: a serializer whose whole job is "never fail the
+        # cache write" must not raise TypeError on a mixed-type set.
+        return sorted(obj, key=str)
+    return str(obj)
+
+
+def _cache_entry_expired(created_at) -> bool:
+    """True when an answer-cache row is older than the hard TTL."""
+    if created_at is None:
+        return False
+    from datetime import UTC, datetime, timedelta
+
+    ts = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - ts) > timedelta(days=_ANSWER_CACHE_TTL_DAYS)
+
+
 @mcp.tool()
 async def get_answer(
     question: str,
     scope: str | None = None,
     repo: str | None = None,
 ) -> dict:
-    """Synthesised answer to a code question with verified citations and a calibrated trust signal.
+    """Synthesised answer with citations and a calibrated trust signal.
 
-    The only tool that pairs RAG retrieval over the wiki with an LLM-written
-    answer plus a separately-reported retrieval_quality. Use it as the first
-    call on "how does X work" / "where is Y" / "why is Z structured this way"
-    questions — it eliminates the search → context → read loop when retrieval
-    is dominant. On low confidence it returns a structured ``best_guesses``
-    list (one-line justifications per candidate) instead of an empty answer,
-    so the caller always has somewhere concrete to Read next.
-
-    Returns ``{answer, citations, confidence, retrieval_quality,
-    fallback_targets, best_guesses?, next_action_hint?}``. Always verify cited
-    paths exist if you intend to act on them.
+    First call for "how does X work" / "where is Y" / "why is Z" questions.
+    confidence=high is content-grounded (value + citation-source gates):
+    cite it directly, no verification Read needed. Low confidence returns
+    best_guesses with one-line justifications instead of an empty answer.
+    retrieval_quality separately rates the retrieval that fed synthesis.
 
     Args:
         question: developer question.
-        scope: optional path prefix to restrict retrieval (e.g. "src/pkg/").
-        repo: repository identifier; usually omitted.
+        scope: optional path-prefix filter (e.g. "src/pkg/").
+        repo: usually omitted.
     """
     if repo == "all":
         return _unsupported_repo_all("get_answer")
@@ -175,10 +202,23 @@ async def get_answer(
             cached_paths = [
                 *(payload.get("citations") or []),
                 *(payload.get("fallback_targets") or []),
-                *(h.get("target_path") for h in (payload.get("retrieval") or [])),
+                # "path" is the serialized key; "target_path" survives in
+                # rows cached before the clean retrieval view existed.
+                *(h.get("path") or h.get("target_path") for h in (payload.get("retrieval") or [])),
                 *(g.get("file") for g in (payload.get("best_guesses") or [])),
             ]
             excluded_cache = any(is_excluded(p, exclude_spec) for p in cached_paths)
+            # Freshness: a row synthesised against a previous index may cite
+            # moved code or stale values. The write path stamps the repo's
+            # head commit into the persisted payload; a mismatch (or a row
+            # past the hard TTL, for pre-stamping rows and gitless repos)
+            # forces re-synthesis.
+            current_commit = getattr(repository, "head_commit", None)
+            cached_commit = payload.get("_indexed_commit")
+            stale_commit = bool(
+                cached_commit and current_commit and cached_commit != current_commit
+            )
+            expired = _cache_entry_expired(cached.created_at)
             if schema_stale:
                 _log.info(
                     "Bypassing cache entry at schema v%s (current v%s)",
@@ -189,7 +229,19 @@ async def get_answer(
                 _log.info("Bypassing hedged cache entry for re-synthesis")
             elif excluded_cache:
                 _log.info("Bypassing cache entry referencing a now-excluded path")
+            elif stale_commit:
+                _log.info(
+                    "Bypassing cache entry from commit %s (repo now at %s)",
+                    cached_commit,
+                    current_commit,
+                )
+            elif expired:
+                _log.info("Bypassing cache entry past the %d-day TTL", _ANSWER_CACHE_TTL_DAYS)
             else:
+                # Cache-internal fields never reach the consumer (response
+                # keys must not start with "_" except _meta).
+                payload.pop("_indexed_commit", None)
+                payload.pop("_schema_version", None)
                 payload["_meta"] = _build_meta(
                     timing_ms=(time.perf_counter() - t0) * 1000,
                     cached=True,
@@ -330,7 +382,7 @@ async def get_answer(
                     else "Fall back to search_codebase or Grep."
                 ),
                 "fallback_targets": fallback_targets,
-                "retrieval": hits[:_GATED_RETURN_HITS],
+                "retrieval": _serialize_hits(hits, limit=_GATED_RETURN_HITS),
                 "note": (
                     "Multiple plausible candidates — synthesis skipped to "
                     "avoid anchoring on a wrong frame. Each best_guess entry "
@@ -352,6 +404,42 @@ async def get_answer(
     # dominant relational questions and pushes cost back onto the agent's
     # own reasoning loop.
 
+    # --- Value-extraction fast path ----------------------------------------
+    # Value-shaped question + a question-matched constant in the top hits →
+    # the verbatim assignment line (read live by the hydrator) IS the
+    # answer. Today this class of question costs a multi-call drill-down
+    # chain and synthesis sometimes invents the number; the fast path is one
+    # call, zero LLM cost, and cannot hallucinate. Not cached: extraction is
+    # cheap and must always reflect the current source.
+    if _is_value_question(question) and question_ids:
+        extraction = _extract_value_answer(hits, question_ids)
+        if extraction is not None:
+            top_score_fp = hits[0].get("score", 0.0) if hits else 0.0
+            answer_text = extraction["answer"]
+            if extraction.get("value_source"):
+                answer_text += "\n\n" + extraction["value_source"]
+            return {
+                "answer": answer_text,
+                "citations": [extraction["file"]],
+                "confidence": "high",
+                "retrieval_quality": (
+                    "high" if top_score_fp >= _HIGH_CONFIDENCE_SCORE_FLOOR else "partial"
+                ),
+                "grounding": "extracted",
+                "fallback_targets": fallback_targets,
+                "retrieval": [],
+                "note": (
+                    "Extracted verbatim from the live source line — no LLM "
+                    "synthesis involved. Cite directly; no verification "
+                    "Read needed."
+                ),
+                "_meta": _build_meta(
+                    timing_ms=(time.perf_counter() - t0) * 1000,
+                    hint=_answer_hint("high", len(hits)),
+                    repository=repository,
+                ),
+            }
+
     # --- Synthesis (LLM) ---------------------------------------------------
     provider = _resolve_provider_for_answer(getattr(ctx, "path", None))
     if provider is None:
@@ -362,7 +450,7 @@ async def get_answer(
             "citations": [],
             "confidence": "low",
             "fallback_targets": fallback_targets,
-            "retrieval": hits,
+            "retrieval": _serialize_hits(hits),
             "note": (
                 "No LLM provider configured (set REPOWISE_PROVIDER + API key). "
                 "Returning retrieval hits only — Read the listed files to answer."
@@ -412,7 +500,7 @@ async def get_answer(
             "citations": [],
             "confidence": "low",
             "fallback_targets": fallback_targets,
-            "retrieval": hits,
+            "retrieval": _serialize_hits(hits),
             "note": f"LLM synthesis failed ({type(exc).__name__}). Read the listed files to answer.",
             "_meta": _build_meta(
                 timing_ms=(time.perf_counter() - t0) * 1000,
@@ -427,6 +515,36 @@ async def get_answer(
     if not citations:
         # Fall back to top-2 retrieval paths so the agent always has something to verify.
         citations = fallback_targets[:2]
+
+    # Line-grounded quotes: for symbols the answer actually names, attach the
+    # verbatim source line(s) the hydrator read live from disk. An agent can
+    # publish a cited claim backed by a quote without any verification Read —
+    # the quote IS the verification.
+    quotes: list[dict] = []
+    for h in hits[:_ENRICH_TOP_N_HITS]:
+        for s in h.get("symbols") or []:
+            name = s.get("name")
+            # Require a name long enough that substring containment is
+            # meaningful — a 1-2 char constant (``T``, ``e``) would "appear"
+            # in almost any answer and attach an irrelevant quote.
+            if not name or len(name) < 3 or name not in answer_text:
+                continue
+            src = s.get("source_excerpt") or s.get("signature") or ""
+            if not src:
+                continue
+            quote_lines = src.splitlines()[:3]
+            start = s.get("start_line") or 0
+            quotes.append(
+                {
+                    "path": h.get("target_path"),
+                    "lines": [start, start + len(quote_lines) - 1],
+                    "quote": "\n".join(quote_lines),
+                }
+            )
+            if len(quotes) >= 5:
+                break
+        if len(quotes) >= 5:
+            break
 
     # Compute confidence from the dominance ratio (top hit vs second hit).
     # The dominance ratio is a more reliable separator than absolute BM25
@@ -471,6 +589,27 @@ async def get_answer(
         if not has_match:
             confidence = "medium"
 
+    # Fourth gate — value grounding: on value-shaped questions (default /
+    # threshold / limit / how many), every number the answer asserts must
+    # appear somewhere in the material retrieval actually contained. A
+    # number synthesis produced from thin air is a factual error delivered
+    # with authority — the single worst calibration failure, because the
+    # consumer was told not to verify. Cap at low and say why.
+    ungrounded_values: list[str] = []
+    if not hedged and _is_value_question(question):
+        ungrounded_values = _ungrounded_numbers(answer_text, hits)
+        if ungrounded_values:
+            confidence = "low"
+
+    # Fifth gate — citation-source gate: a high-confidence answer must cite
+    # at least one page that contributed actual source material (hydrated
+    # symbols with signatures/bodies), not just file summaries. Summary-only
+    # grounding is how plausible-but-wrong syntheses get through.
+    if confidence == "high":
+        cited = set(citations)
+        if not any(h.get("symbols") for h in hits if h.get("target_path") in cited):
+            confidence = "medium"
+
     # retrieval_quality is a separate signal from confidence. Where confidence
     # says "how much should you trust the synthesised text", retrieval_quality
     # says "how good was the retrieval that fed it". The agent uses confidence
@@ -489,7 +628,6 @@ async def get_answer(
         # synthesis doesn't help them, and keeping it in the response bloats
         # every follow-up turn's prompt cache.
         payload = {
-            "_schema_version": _ANSWER_SCHEMA_VERSION,
             "answer": answer_text,
             "citations": citations,
             "confidence": "low",
@@ -502,16 +640,45 @@ async def get_answer(
             ),
         }
     else:
+        # Confidence-conditional retrieval block: the block exists so the
+        # agent can ground when the answer alone isn't trustworthy. At high
+        # confidence the citations + answer suffice — carrying five enriched
+        # hits through the conversation cache buys nothing. At medium the
+        # agent verifies the top candidates: two truncated hits, no symbol
+        # enrichment for graph-expansion neighbors. Low keeps the full
+        # block — that's when routing material earns its bytes.
+        if confidence == "high":
+            retrieval_view: list[dict] = []
+        elif confidence == "medium":
+            retrieval_view = _serialize_hits(
+                hits, limit=2, summary_chars=160, symbols_for_expanded=False
+            )
+        else:
+            retrieval_view = _serialize_hits(hits)
         payload = {
-            "_schema_version": _ANSWER_SCHEMA_VERSION,
             "answer": answer_text,
             "citations": citations,
             "confidence": confidence,
             "retrieval_quality": retrieval_quality,
             "fallback_targets": fallback_targets,
-            "retrieval": hits,
+            "retrieval": retrieval_view,
         }
-        if confidence == "high":
+        if quotes:
+            payload["quotes"] = quotes
+        if ungrounded_values:
+            payload["note"] = (
+                f"Value-grounding gate: the answer asserts {ungrounded_values} "
+                "but none of these appear in any retrieved excerpt — the "
+                "value(s) may be synthesised. Read "
+                f"{fallback_targets[0] if fallback_targets else 'the cited file'} "
+                "to confirm before citing a number."
+            )
+            if fallback_targets:
+                payload["next_action_hint"] = (
+                    f"Read {fallback_targets[0]} and verify the asserted value(s) "
+                    f"{ungrounded_values} against the live source."
+                )
+        elif confidence == "high":
             payload["note"] = (
                 "High confidence: top retrieval result clearly dominates "
                 f"(dominance ratio {_ratio:.2f}x, top score {_top_score:.2f}) "
@@ -520,21 +687,39 @@ async def get_answer(
                 "is missing."
             )
 
-    # Persist to cache. Best-effort: cache failures must NEVER block the
-    # response (we already have the answer in hand).
+    # Persist to cache (upsert). Best-effort: cache failures must never block
+    # the response — but they must be LOGGED, not suppressed. A plain INSERT
+    # under a blanket suppress violated uq_answer_cache_q on every
+    # bypass-and-resynthesize round and failed silently, so hedged/stale rows
+    # were never upgraded. Delete-then-insert in one transaction is the
+    # dialect-agnostic upsert; the stamped _indexed_commit drives the
+    # read-side freshness check.
     if answer_text:
-        with contextlib.suppress(Exception):
+        cache_payload = dict(payload)
+        cache_payload["_schema_version"] = _ANSWER_SCHEMA_VERSION
+        commit_now = getattr(repository, "head_commit", None)
+        if commit_now:
+            cache_payload["_indexed_commit"] = commit_now
+        try:
             async with get_session(ctx.session_factory) as session:
+                await session.execute(
+                    delete(AnswerCache).where(
+                        AnswerCache.repository_id == repo_id,
+                        AnswerCache.question_hash == qhash,
+                    )
+                )
                 row = AnswerCache(
                     repository_id=repo_id,
                     question_hash=qhash,
                     question=question.strip(),
-                    payload_json=_json.dumps(payload),
+                    payload_json=_json.dumps(cache_payload, default=_json_default),
                     provider_name=getattr(provider, "provider_name", "") or "",
                     model_name=getattr(provider, "model_name", "") or "",
                 )
                 session.add(row)
                 await session.commit()
+        except Exception as exc:
+            _log.warning("get_answer cache write failed: %s", exc)
 
     payload["_meta"] = _build_meta(
         timing_ms=(time.perf_counter() - t0) * 1000,

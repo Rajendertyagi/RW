@@ -58,12 +58,14 @@ class LanguageConfig:
     parent_class_types: frozenset[str] = field(default_factory=frozenset)
 
 
-
 LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
     "python": LanguageConfig(
         symbol_node_types={
             "function_definition": "function",
             "class_definition": "class",
+            # Module-level assignments (the .scm pattern is module-anchored).
+            # Refined in the parser: SCREAMING_CASE → constant, else variable.
+            "assignment": "constant",
         },
         import_node_types=["import_statement", "import_from_statement"],
         export_node_types=[],
@@ -83,6 +85,9 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "enum_declaration": "enum",
             "method_definition": "method",
             "lexical_declaration": "function",  # const foo = () => {}
+            # Top-level const/let with a literal value (the .scm pattern is
+            # program-anchored). Refined in the parser like Python assignments.
+            "variable_declarator": "constant",
         },
         import_node_types=["import_statement"],
         export_node_types=["export_statement"],
@@ -98,6 +103,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "class_declaration": "class",
             "method_definition": "method",
             "lexical_declaration": "function",
+            "variable_declarator": "constant",
         },
         import_node_types=["import_statement"],
         export_node_types=["export_statement"],
