@@ -118,6 +118,23 @@ _AGENT_ALIASES: list[tuple[str, str]] = [
 _SERVICE_EMAILS: dict[str, tuple[str, int]] = {
     "cursoragent@cursor.com": ("cursor", 1),
     "devin-ai-integration[bot]@users.noreply.github.com": ("devin", 1),
+    # Primarily Claude's co-author identity; as AUTHOR it is tier 1 like every
+    # other service e-mail here.
+    "noreply@anthropic.com": ("claude", 1),
+}
+
+# Agent-vendor e-mail domains → the exact agent identities each vendor emits.
+# A domain alone is never enough — real humans work at these companies — so an
+# identity here counts only when the LOCAL PART fully matches the vendor's
+# allowlisted agent identity (anchored fullmatch, never a substring scan, and
+# per vendor, never a flat token set): ``claude@anthropic.com`` and the
+# ``claude-<model>`` slugs match; ``jane@anthropic.com``,
+# ``jean-claude@anthropic.com`` and ``codex@anthropic.com`` never do.
+_VENDOR_DOMAIN_LOCALS: dict[str, tuple[re.Pattern[str], str]] = {
+    "anthropic.com": (re.compile(r"claude(?:-(?:opus|sonnet|haiku)(?:-[\w.]+)?)?"), "claude"),
+    "openai.com": (re.compile(r"codex"), "codex"),
+    "cursor.com": (re.compile(r"cursor(?:agent)?"), "cursor"),
+    "devin.ai": (re.compile(r"devin"), "devin"),
 }
 
 # Commit-message footers → agent (exact service phrases only).
@@ -157,6 +174,13 @@ _COAUTHOR_PATTERNS: list[tuple[str, str]] = [
 ]
 
 _AIDER_NAME_RE = re.compile(r"\(aider\)\s*$")
+
+# Any ``Co-authored-by:`` trailer's e-mail, for registry-based identity
+# matching: agent service identities the explicit patterns above don't name
+# (bot noreply logins, exact service e-mails, vendor-domain identities) are
+# resolved through the same :meth:`AgentProvenanceClassifier._identity_match`
+# registry — one list, no parallel patterns.
+_COAUTHOR_EMAIL_RE = re.compile(r"^co-authored-by:[^<\n]*<([^>\s]+)>", re.IGNORECASE | re.MULTILINE)
 
 
 def _normalize_agent_token(value: str, *, allow_slug: bool) -> str | None:
@@ -274,6 +298,10 @@ class AgentProvenanceClassifier:
         m = self._bot_email_re.match(e)
         if m:
             return (_BOT_LOGINS[m.group(1).lower()], 1)
+        local, _, domain = e.partition("@")
+        vendor = _VENDOR_DOMAIN_LOCALS.get(domain)
+        if vendor and vendor[0].fullmatch(local):
+            return (vendor[1], 1)
         return None
 
     def classify(
@@ -328,6 +356,10 @@ class AgentProvenanceClassifier:
         for pat, agent in self._coauthors:
             if pat.search(message):
                 return AgentProvenance(agent, 3, "coauthor_trailer", "high")
+        for m in _COAUTHOR_EMAIL_RE.finditer(message):
+            hit = self._identity_match(m.group(1))
+            if hit:
+                return AgentProvenance(hit[0], 3, "coauthor_trailer", "high")
         return _HUMAN
 
 
