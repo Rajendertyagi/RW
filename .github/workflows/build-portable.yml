@@ -1,24 +1,29 @@
 name: Build Portable Repowise
+
 on:
   push:
     branches: [ main ]
   workflow_dispatch: # Allows manual trigger from GitHub UI
+
 jobs:
   build-windows:
     runs-on: windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11' # Use 3.11 for maximum C-extension compatibility
+
       - name: Install Nuitka and Repowise
         run: |
           python -m pip install --upgrade pip
           pip install nuitka
           # Install your forked repowise repository code
           pip install -e .
+
       - name: Download Portable Node.js
         run: |
           curl.exe -sL -o node.zip https://nodejs.org/dist/v20.11.1/node-v20.11.1-win-x64.zip
@@ -26,13 +31,16 @@ jobs:
           Move-Item -Path "node_temp\node-v20.11.1-win-x64\node.exe" -Destination ".\node.exe" -Force
           Remove-Item -Recurse -Force node_temp
           Remove-Item -Force node.zip
+
       - name: Download Repowise Web Frontend
         run: |
           curl.exe -sL -o repowise-web.tar.gz https://github.com/repowise-dev/repowise/releases/download/v0.33.0/repowise-web.tar.gz
+
       - name: Compile with Nuitka
         run: |
           # Compiles run_repowise.py into a standalone .dist directory
-          python -m nuitka --standalone --assume-yes-for-downloads --output-dir=dist --enable-plugin=pydantic --enable-plugin=fastapi --include-package=uvicorn --include-package=httpx --include-package=sqlglot --include-package=networkx --include-package=scipy --include-package=sqlalchemy --include-package=alembic --include-package=click --include-package=rich --include-package=git --include-package=apscheduler --include-package=lancedb --include-package=jinja2 --include-package=structlog --include-package=tree_sitter --include-package=tree_sitter_python --include-package=tree_sitter_typescript --include-package=tree_sitter_javascript --include-package=tree_sitter_go --include-package=tree_sitter_rust --include-package=tree_sitter_java --include-package=tree_sitter_cpp --include-package=tree_sitter_dart --include-package=tree_sitter_kotlin --include-package=tree_sitter_ruby --include-package=tree_sitter_c_sharp --include-package=tree_sitter_swift --include-package=tree_sitter_scala --include-package=tree_sitter_php --include-package=tree_sitter_luau --include-package=tree_sitter_bash --include-package-data=repowise run_repowise.py
+          python -m nuitka --standalone --assume-yes-for-downloads --output-dir=dist --enable-plugin=pydantic --enable-plugin=fastapi --include-package=uvicorn --include-package=httpx --include-package=sqlglot --include-package=networkx --include-package=scipy --include-package=sqlalchemy --include-package=alembic --include-package=click --include-package=rich --include-package=git --include-package=apscheduler --include-package=lancedb --include-package=jinja2 --include-package=structlog --include-package=mcp --include-package=tree_sitter --include-package=tree_sitter_python --include-package=tree_sitter_typescript --include-package=tree_sitter_javascript --include-package=tree_sitter_go --include-package=tree_sitter_rust --include-package=tree_sitter_java --include-package=tree_sitter_cpp --include-package=tree_sitter_dart --include-package=tree_sitter_kotlin --include-package=tree_sitter_ruby --include-package=tree_sitter_c_sharp --include-package=tree_sitter_swift --include-package=tree_sitter_scala --include-package=tree_sitter_php --include-package=tree_sitter_luau --include-package=tree_sitter_bash --include-package-data=repowise run_repowise.py
+
       - name: Bundle Web UI & Node.js
         run: |
           # Move portable node.exe into the final Nuitka directory
@@ -46,6 +54,7 @@ jobs:
           if (Test-Path "repowise_config.json") {
               Copy-Item "repowise_config.json" -Destination "dist\run_repowise.dist\repowise_config.json"
           }
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
