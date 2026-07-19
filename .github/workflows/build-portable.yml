@@ -32,7 +32,7 @@ jobs:
       - name: Compile with Nuitka
         run: |
           # Compiles run_repowise.py into a standalone .dist directory
-          python -m nuitka --standalone --assume-yes-for-downloads --output-dir=dist --enable-plugin=uvicorn --enable-plugin=fastapi --enable-plugin=pydantic --include-package=tree_sitter --include-package=sqlglot run_repowise.py
+          python -m nuitka --standalone --assume-yes-for-downloads --output-dir=dist --enable-plugin=pydantic --include-package=uvicorn --include-package=fastapi --include-package=tree_sitter --include-package=sqlglot run_repowise.py
       - name: Bundle Web UI & Node.js
         run: |
           # Move portable node.exe into the final Nuitka directory
@@ -50,4 +50,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: repowise-portable-windows
-          path: dist/run_repowise.dis
+          path: dist/run_repowise.dist/
