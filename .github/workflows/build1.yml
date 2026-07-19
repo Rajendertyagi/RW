@@ -1,5 +1,4 @@
 name: Build Portable Repowise (Nuitka)
-
 on:
   push:
     branches: [ main, master ]
@@ -22,7 +21,7 @@ jobs:
           python -m pip install repowise nuitka zstandard
       - name: Compile with Nuitka
         run: |
-          python -m nuitka --standalone --onefile --output-dir=build_out `
+          python -m nuitka --standalone --onefile --output-dir=build_out --accept-downloads `
             --include-package=repowise `
             --include-package-data=repowise `
             --include-package=tree_sitter `
