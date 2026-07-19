@@ -56,9 +56,7 @@ class Repository(Base):
     # from that sample — otherwise a multi-year repo reads as a few months old
     # (issue #730). NULL until the first index writes them / for non-git repos.
     total_commit_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    first_commit_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    first_commit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # All-time unique authors (mailmap-folded) and the founding author's name.
     # Contributor count shares the #730 bug when read off the bounded sample;
     # the founder rides along free (the root commit is already loaded for the
@@ -445,7 +443,13 @@ class GitMetadata(Base):
     # Prior-defect history: bug-fix commits touching this file in the trailing
     # ~6-month defect window (anchored to the index's as_of reference). Consumed
     # by the ``prior_defect`` health biomarker — a leakage-aware process signal.
+    #
+    # ``prior_defect_count`` keeps only fixes whose diff changes production code
+    # (see ingestion.git_indexer.fix_shape); ``prior_defect_raw_count`` is every
+    # subject-matched fix, kept alongside so the filtered-out noise stays
+    # inspectable instead of silently vanishing from the count.
     prior_defect_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    prior_defect_raw_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     # Temporal hotspot score: exponentially time-decayed churn signal
     temporal_hotspot_score: Mapped[float | None] = mapped_column(Float, nullable=True, default=0.0)
@@ -551,6 +555,72 @@ class GitCommit(Base):
     # attributed the commit. Set only for the ``agent_trace`` channel (no other
     # local channel carries a model); NULL for human or non-trace commits.
     agent_model_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+
+class FixEvent(Base):
+    """One bug-fix commit's effect on one file, with its bug-introducing candidates.
+
+    ``GitMetadata.prior_defect_count`` is the aggregate of these rows; this table
+    is the evidence underneath it. Each row records what a fix commit did to one
+    file (:mod:`ingestion.git_indexer.fix_shape` kind, the old-side line ranges it
+    replaced, how many lines it changed) and, for ``code_fix`` rows, the ranked
+    commits that ``git blame`` puts on those lines at ``fix^`` — the SZZ
+    bug-introducing candidates.
+
+    ``committed_at`` is load-bearing. Rows are stored **undecayed**: every recency
+    weight downstream (biomarker mass, bug-magnet flag, rollups) is derived at read
+    time from this column, so changing a half-life is a read-time decision and
+    never needs a reindex.
+
+    Joins: ``fix_sha`` and each inducing sha to :class:`GitCommit` (which already
+    carries agent provenance), and ``file_path`` + ``old_ranges_json`` to
+    :class:`WikiSymbol` / :class:`GitFunctionBlame` line ranges.
+
+    Retention mirrors the ``prior_defect`` window: a full index seeds the trailing
+    window, updates append newer fix commits and prune rows that have aged out, so
+    the table always holds exactly the window a fresh index would produce.
+    """
+
+    __tablename__ = "fix_events"
+    __table_args__ = (
+        UniqueConstraint("repository_id", "fix_sha", "file_path", name="uq_fix_event"),
+        Index("ix_fix_events_repo_path", "repository_id", "file_path"),
+        Index("ix_fix_events_repo_time", "repository_id", "committed_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    fix_sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # fix_shape kind for the WHOLE commit, repeated on each of its file rows:
+    # the classification is a property of the diff, not of one file in it.
+    shape_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="code_fix")
+
+    # Inclusive ``[[start, end], ...]`` spans on the PRE-fix file — the space
+    # ``git blame fix^`` is keyed in. Empty for a pure insertion (nothing to blame).
+    old_ranges_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    changed_loc: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Ranked SZZ candidates, ``[{"sha", "lines", "ts"}, ...]``, most blamed lines
+    # first. Stored ranked but complete, so a different ranking (earliest-commit,
+    # say) stays a read-time re-sort. Empty for non-code_fix rows, for pure
+    # insertions, and for fixes the tracer skipped (comment-only or oversized).
+    inducing_shas_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+
+    # Per-bucket changed-line counts from the fix taxonomy. Empty until Phase 5.
+    taxonomy_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+    committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import {
   Bot,
   CalendarClock,
@@ -25,6 +26,7 @@ import {
   formatTokens,
   formatCost,
 } from "@repowise-dev/ui/lib/format";
+import { useWeekendDays } from "@/lib/hooks/use-weekend";
 
 const ECOSYSTEM_NAMES: Record<string, string> = {
   npm: "npm",
@@ -40,6 +42,7 @@ export function ByTheNumbersTab({ data }: { data: StatsHighlights }) {
   const deps = data.dependencies;
   const build = data.build;
   const vel = activity.velocity;
+  const weekendDays = useWeekendDays();
 
   // Momentum: recent-vs-prior commit change, or a plain recent count when there
   // is no prior window to compare against (young repo).
@@ -105,7 +108,7 @@ export function ByTheNumbersTab({ data }: { data: StatsHighlights }) {
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2">
-          <PunchCard data={activity.punch_card} />
+          <PunchCard data={activity.punch_card} weekendDays={weekendDays} />
         </div>
         <div className="flex flex-col gap-4">
           {/* Momentum — recent vs prior 90-day commit volume, with a mini
@@ -132,7 +135,7 @@ export function ByTheNumbersTab({ data }: { data: StatsHighlights }) {
               </span>
             </div>
             <p
-              className={`mt-1.5 text-3xl font-bold leading-none tabular-nums ${
+              className={`mt-1.5 text-2xl font-bold leading-none tabular-nums ${
                 vel?.pct_change == null
                   ? "text-[var(--color-text-primary)]"
                   : rising
@@ -201,7 +204,7 @@ export function ByTheNumbersTab({ data }: { data: StatsHighlights }) {
                   { v: formatCost(build.cost_usd), l: "to build" },
                 ].map((s) => (
                   <div key={s.l}>
-                    <p className="text-2xl font-bold tabular-nums text-[var(--color-text-primary)]">
+                    <p className="text-lg font-semibold tabular-nums text-[var(--color-text-primary)]">
                       {s.v}
                     </p>
                     <p className="mt-0.5 text-[11px] text-[var(--color-text-tertiary)]">{s.l}</p>
@@ -236,6 +239,8 @@ export function ByTheNumbersTab({ data }: { data: StatsHighlights }) {
             label="Dependencies"
             value={formatNumber(deps.total)}
             icon={<Package className="h-4 w-4" />}
+            href={`/repos/${data.repo.id}/architecture?view=deps`}
+            LinkComponent={Link}
             sub={`standing on ${formatNumber(deps.runtime)} runtime + ${formatNumber(
               deps.dev,
             )} dev shoulders across ${deps.ecosystems
