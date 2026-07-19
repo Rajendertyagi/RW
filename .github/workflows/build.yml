@@ -28,10 +28,13 @@ jobs:
           # 5. Install pip
           .\repowise-portable\python.exe .\repowise-portable\get-pip.py --no-warn-script-location
           
-          # 6. Install repowise package via the embedded pip
+          # 6. Install build & wheel so pip can automatically compile any source packages it needs
+          .\repowise-portable\python.exe -m pip install --upgrade pip build wheel --no-warn-script-location
+          
+          # 7. Install repowise (pip will now auto-resolve, build, and compile everything automatically)
           .\repowise-portable\python.exe -m pip install repowise --no-warn-script-location
           
-          # 7. Clean up setup files to keep it lightweight
+          # 8. Clean up setup files to keep it lightweight
           Remove-Item "repowise-portable/get-pip.py"
           Remove-Item "python-embed.zip"
       - name: Create Launcher Script
