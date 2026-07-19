@@ -1,0 +1,8 @@
+{
+    "plugins": [
+        {
+            "path": "my_custom_plugins_folder",
+            "module": "my_cool_feature"
+        }
+    ]
+}
