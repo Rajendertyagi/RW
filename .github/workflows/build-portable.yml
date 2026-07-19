@@ -32,7 +32,7 @@ jobs:
       - name: Compile with Nuitka
         run: |
           # Compiles run_repowise.py into a standalone .dist directory
-          python -m nuitka --standalone --assume-yes-for-downloads --output-dir=dist --enable-plugin=pydantic --include-package=uvicorn --include-package=fastapi --include-package=tree_sitter --include-package=sqlglot run_repowise.py
+          python -m nuitka --standalone --assume-yes-for-downloads --output-dir=dist --include-package=pydantic --include-package=uvicorn --include-package=fastapi --include-package=sqlglot --include-package=networkx --include-package=scipy --include-package=sqlalchemy --include-package=alembic --include-package=click --include-package=rich --include-package=git --include-package=apscheduler --include-package=lancedb --include-package=jinja2 --include-package=structlog --include-package=tree_sitter --include-package=tree_sitter_python --include-package=tree_sitter_typescript --include-package=tree_sitter_javascript --include-package=tree_sitter_go --include-package=tree_sitter_rust --include-package=tree_sitter_java --include-package=tree_sitter_cpp --include-package=tree_sitter_dart --include-package=tree_sitter_kotlin --include-package=tree_sitter_ruby --include-package=tree_sitter_c_sharp --include-package=tree_sitter_swift --include-package=tree_sitter_scala --include-package=tree_sitter_php --include-package=tree_sitter_luau --include-package=tree_sitter_bash --include-package-data=repowise run_repowise.py
       - name: Bundle Web UI & Node.js
         run: |
           # Move portable node.exe into the final Nuitka directory
