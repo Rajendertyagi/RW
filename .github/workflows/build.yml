@@ -28,11 +28,11 @@ jobs:
           # 5. Install pip
           .\repowise-portable\python.exe .\repowise-portable\get-pip.py --no-warn-script-location
           
-          # 6. Install build, wheel, setuptools, and maturin directly in the parent environment
-          .\repowise-portable\python.exe -m pip install --upgrade pip build wheel setuptools maturin --no-warn-script-location
+          # 6. Install build & wheel helpers
+          .\repowise-portable\python.exe -m pip install --upgrade pip build wheel --no-warn-script-location
           
-          # 7. Install repowise disabling build isolation so it can use the installed build tools
-          .\repowise-portable\python.exe -m pip install repowise --no-build-isolation --no-warn-script-location
+          # 7. Install repowise, preferring precompiled binary wheels to avoid compiling Rust/C extensions
+          .\repowise-portable\python.exe -m pip install repowise --prefer-binary --no-warn-script-location
           
           # 8. Clean up setup files to keep it lightweight
           Remove-Item "repowise-portable/get-pip.py"
