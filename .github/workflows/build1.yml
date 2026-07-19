@@ -1,0 +1,42 @@
+ame: Build Portable Repowise (Nuitka)
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch: # Allows manual trigger from the Actions tab
+jobs:
+  build:
+    name: Build Windows Single EXE
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install repowise nuitka zstandard
+      - name: Compile with Nuitka
+        run: |
+          python -m nuitka --standalone --onefile --output-dir=build_out `
+            --include-package=repowise `
+            --include-package-data=repowise `
+            --include-package=tree_sitter `
+            --include-package=tree_sitter_python `
+            --include-package=tree_sitter_typescript `
+            --include-package=tree_sitter_javascript `
+            --include-package=tree_sitter_go `
+            --include-package=tree_sitter_rust `
+            --include-package=tree_sitter_java `
+            --include-package=tree_sitter_cpp `
+            --include-package=tree_sitter_bash `
+            run.py
+      - name: Upload Standalone EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: repowise-windows-standalone-exe
+          path: build_out/run.exe
+          retention-days: 7
