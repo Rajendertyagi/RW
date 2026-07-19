@@ -6,8 +6,8 @@ if __name__ == '__main__':
     
     # Import and run the Repowise CLI
     try:
-        from repowise.cli import main
-        sys.exit(main())
+        from repowise.cli.main import cli
+        sys.exit(cli())
     except Exception as e:
         print(f"Error starting Repowise: {e}", file=sys.stderr)
         sys.exit(1)
