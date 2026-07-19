@@ -36,10 +36,17 @@ from .enrich import (
     meets_hotspot_floors,
 )
 from .file_history import index_file
+from .fix_events import build_fix_events
 from .fix_shape import SHAPE_KINDS, classify_fix_shape
 from .identity import build_identity_resolver, canonicalize_author_email
 from .indexer import GitIndexer
-from .prior_defects import PriorDefects, compute_prior_defects
+from .prior_defects import (
+    FixCommit,
+    FixWalk,
+    PriorDefects,
+    collect_fix_commits,
+    compute_prior_defects,
+)
 from .records import (
     _FIELD_SEP,
     _LOG_FORMAT,
@@ -50,6 +57,7 @@ from .records import (
     _parse_commit_record,
     _should_skip_index,
 )
+from .szz import InducingCandidate, SzzTracer, rank_candidates
 from .tiers import GitIndexTier
 
 __all__ = [
@@ -62,19 +70,25 @@ __all__ = [
     "_RECORD_SEP",
     "AgentProvenance",
     "AgentProvenanceClassifier",
+    "FixCommit",
+    "FixWalk",
     "GitIndexSummary",
     "GitIndexTier",
     "GitIndexer",
+    "InducingCandidate",
     "PriorDefects",
+    "SzzTracer",
     "_CommitRec",
     "_extract_rename_paths",
     "_parse_commit_record",
     "_should_skip_index",
     "backfill_full_tier",
+    "build_fix_events",
     "build_identity_resolver",
     "canonicalize_author_email",
     "classifier_from_repo_config",
     "classify_fix_shape",
+    "collect_fix_commits",
     "compute_co_changes",
     "compute_co_changes_and_entropy",
     "compute_percentiles",
@@ -86,4 +100,5 @@ __all__ = [
     "is_fix_commit",
     "is_significant_commit",
     "meets_hotspot_floors",
+    "rank_candidates",
 ]
