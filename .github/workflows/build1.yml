@@ -1,4 +1,5 @@
-ame: Build Portable Repowise (Nuitka)
+name: Build Portable Repowise (Nuitka)
+
 on:
   push:
     branches: [ main, master ]
