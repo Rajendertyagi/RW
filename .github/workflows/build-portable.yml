@@ -1,0 +1,53 @@
+name: Build Portable Repowise
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: # Allows manual trigger from GitHub UI
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # Use 3.11 for maximum C-extension compatibility
+      - name: Install Nuitka and Repowise
+        run: |
+          python -m pip install --upgrade pip
+          pip install nuitka
+          # Install your forked repowise repository code
+          pip install -e .
+      - name: Download Portable Node.js
+        run: |
+          curl.exe -sL -o node.zip https://nodejs.org/dist/v20.11.1/node-v20.11.1-win-x64.zip
+          Expand-Archive -Path node.zip -DestinationPath node_temp -Force
+          Move-Item -Path "node_temp\node-v20.11.1-win-x64\node.exe" -Destination ".\node.exe" -Force
+          Remove-Item -Recurse -Force node_temp
+          Remove-Item -Force node.zip
+      - name: Download Repowise Web Frontend
+        run: |
+          curl.exe -sL -o repowise-web.tar.gz https://github.com/repowise-dev/repowise/releases/download/v0.33.0/repowise-web.tar.gz
+      - name: Compile with Nuitka
+        run: |
+          # Compiles run_repowise.py into a standalone .dist directory
+          python -m nuitka --standalone --assume-yes-for-downloads --output-dir=dist --enable-plugin=uvicorn --enable-plugin=fastapi --enable-plugin=pydantic --include-package=tree_sitter --include-package=sqlglot run_repowise.py
+      - name: Bundle Web UI & Node.js
+        run: |
+          # Move portable node.exe into the final Nuitka directory
+          Move-Item -Path "node.exe" -Destination "dist\run_repowise.dist\node.exe" -Force
+          
+          # Extract the web dashboard into a 'web' subfolder
+          mkdir dist\run_repowise.dist\web
+          tar -xzf repowise-web.tar.gz -C dist\run_repowise.dist\web
+          
+          # Add an example config file
+          if (Test-Path "repowise_config.json") {
+              Copy-Item "repowise_config.json" -Destination "dist\run_repowise.dist\repowise_config.json"
+          }
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: repowise-portable-windows
+          path: dist/run_repowise.dis
