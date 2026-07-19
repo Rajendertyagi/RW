@@ -7,6 +7,11 @@ jobs:
   build:
     name: Build Windows Single EXE
     runs-on: windows-latest
+    
+    # Explicitly set the default shell to PowerShell so backticks work perfectly
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -21,7 +26,7 @@ jobs:
           python -m pip install repowise nuitka zstandard
       - name: Compile with Nuitka
         run: |
-          python -m nuitka --standalone --onefile --output-dir=build_out --accept-downloads `
+          python -m nuitka --standalone --onefile --output-dir=build_out --assume-yes-for-downloads `
             --include-package=repowise `
             --include-package-data=repowise `
             --include-package=tree_sitter `
